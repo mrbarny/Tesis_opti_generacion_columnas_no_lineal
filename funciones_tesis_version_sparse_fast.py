@@ -95,51 +95,120 @@ def convertir_dict_a_K(K_dict):
     """Convierte un dict de columnas en una lista de tuplas (w,b,xi) y una lista de claves"""
     return list(K_dict.values()), list(K_dict.keys())
 
-def compactar_K_a_sparse(K, keep_xi=True, dtype=np.float32):
-    """Toma una lista K de tuplas (w_dense, b, xi_dense) y la convierte a (w_sparse, b, xi_sparse)"""
+def compactar_K_a_sparse_legacy(K, keep_xi=True, dtype=np.float32):
+    """
+    Convierte lista K a sparse. Ahora soporta si los inputs YA son sparse.
+    """
     K_sparse = []
     if not K: return K_sparse
-    n_features, n_samples = 0, 0
     
-    # Determinar n_features
+    # Determinar dimensiones de forma segura
+    n_features = 0
     for col in K:
-        if col[0] is not None: n_features = len(col[0]); break
-    if n_features == 0: raise ValueError("No se pudo determinar n_features desde el conjunto K.")
-    
+        if col[0] is not None:
+            n_features = col[0].shape[0] if sp.issparse(col[0]) else len(col[0])
+            break
+            
     # Determinar n_samples
+    n_samples = 0
     if keep_xi:
         for col in K:
-            if col[2] is not None: n_samples = len(col[2]); break
-        if n_samples == 0: print("Advertencia: No se pudo determinar n_samples para xi.")
+            if col[2] is not None:
+                n_samples = col[2].shape[0] if sp.issparse(col[2]) else len(col[2])
+                break
 
     for (w, b, xi) in K:
-        # Convertir w
+        # --- Procesar W ---
         if w is None:
             w_sparse = sp.csc_matrix((n_features, 1), dtype=dtype)
+        elif sp.issparse(w):
+            # Si ya es sparse, solo aseguramos formato y shape
+            w_sparse = w.tocsc().astype(dtype)
+            if w_sparse.shape != (n_features, 1):
+                # Intentar transponer si viene como fila
+                if w_sparse.shape == (1, n_features): w_sparse = w_sparse.T
+                else: raise ValueError(f"Shape w incorrecto: {w_sparse.shape}")
         else:
+            # Si es denso (legacy)
             w_dense_col = np.asarray(w, dtype=dtype).reshape(-1, 1)
-            if w_dense_col.shape[0] != n_features: raise ValueError(f"Inconsistencia de shape w")
             w_sparse = sp.csc_matrix(w_dense_col)
-            w_sparse.eliminate_zeros()
+        
+        w_sparse.eliminate_zeros()
             
         b_float = float(b) if b is not None else 0.0
         
-        # Convertir xi
+        # --- Procesar Xi ---
+        xi_final = None
         if keep_xi:
             if xi is None:
-                xi_sparse = sp.csc_matrix((n_samples, 1), dtype=dtype) if n_samples > 0 else None
+                xi_final = sp.csc_matrix((n_samples, 1), dtype=dtype) if n_samples > 0 else None
+            elif sp.issparse(xi):
+                xi_final = xi.tocsc().astype(dtype)
+                if xi_final.shape != (n_samples, 1):
+                     if xi_final.shape == (1, n_samples): xi_final = xi_final.T
             else:
                 xi_dense_col = np.asarray(xi, dtype=dtype).reshape(-1, 1)
-                if n_samples == 0: n_samples = xi_dense_col.shape[0]
-                if xi_dense_col.shape[0] != n_samples: raise ValueError(f"Inconsistencia de shape xi")
-                xi_sparse = sp.csc_matrix(xi_dense_col)
-                xi_sparse.eliminate_zeros()
-        else:
-            xi_sparse = None
+                xi_final = sp.csc_matrix(xi_dense_col)
             
-        K_sparse.append((w_sparse, b_float, xi_sparse))
-    return K_sparse
+            if xi_final is not None: xi_final.eliminate_zeros()
 
+        K_sparse.append((w_sparse, b_float, xi_final))
+        
+    return K_sparse
+def compactar_K_a_sparse(K, keep_xi=True, dtype=np.float32):
+    """
+    Convierte lista K a sparse. Soporta w ya sparse o denso.
+    """
+    K_sparse = []
+    if not K: return K_sparse
+    
+    # Determinar dimensiones
+    n_features = 0
+    for col in K:
+        if col[0] is not None:
+            n_features = col[0].shape[0] if sp.issparse(col[0]) else len(col[0])
+            break
+            
+    n_samples = 0
+    if keep_xi:
+        for col in K:
+            if col[2] is not None:
+                n_samples = col[2].shape[0] if sp.issparse(col[2]) else len(col[2])
+                break
+
+    for (w, b, xi) in K:
+        # --- Procesar W ---
+        if w is None:
+            w_sparse = sp.csc_matrix((n_features, 1), dtype=dtype)
+        elif sp.issparse(w):
+            # Ya viene sparse de crear_sub_problema_random (OPTIMIZADO)
+            w_sparse = w.tocsc().astype(dtype)
+        else:
+            # Legacy: Si viene denso, convertirlo
+            w_dense_col = np.asarray(w, dtype=dtype).reshape(-1, 1)
+            w_sparse = sp.csc_matrix(w_dense_col)
+        
+        # Limpieza básica de ceros
+        w_sparse.eliminate_zeros()
+            
+        b_float = float(b) if b is not None else 0.0
+        
+        # --- Procesar Xi ---
+        xi_final = None
+        if keep_xi:
+            if xi is None:
+                xi_final = sp.csc_matrix((n_samples, 1), dtype=dtype) if n_samples > 0 else None
+            elif sp.issparse(xi):
+                xi_final = xi.tocsc().astype(dtype)
+            else:
+                xi_dense_col = np.asarray(xi, dtype=dtype).reshape(-1, 1)
+                xi_final = sp.csc_matrix(xi_dense_col)
+            
+            if xi_final is not None: xi_final.eliminate_zeros()
+
+        K_sparse.append((w_sparse, b_float, xi_final))
+        
+    return K_sparse
 def crear_sub_problema(X_train, y_train, partes=101, time_max=60, tol=1e-06, keep_xi=True):
     K = [] # Contendrá tuplas con w densos
     column_sets = []  
@@ -174,7 +243,7 @@ def crear_sub_problema(X_train, y_train, partes=101, time_max=60, tol=1e-06, kee
     
     return K_sparse_list, column_sets, df_log
 
-def crear_sub_problema_random(X_train, y_train, partes=101, time_max=60, 
+def crear_sub_problema_random_legacy(X_train, y_train, partes=101, time_max=60, 
                               tol=1e-06, keep_xi=True, random_state=None,solapar=False):
     """
     Resuelve SVM en sub-problemas, usando subconjuntos de 
@@ -287,7 +356,87 @@ def crear_sub_problema_random(X_train, y_train, partes=101, time_max=60,
     
     return K_sparse_list, column_sets, df_log
 
+def crear_sub_problema_random(X_train, y_train, partes=101, time_max=60, 
+                              tol=1e-06, keep_xi=True, random_state=None, solapar=False):
+    K = [] 
+    column_sets = []
+    log_info = []
+    n_samples, n_cols = X_train.shape # (136k, 13M)
 
+    print(f"Barajando {n_cols} índices de columnas (Random State={random_state})...")
+    
+    rng = np.random.default_rng(random_state)
+    
+    if not solapar:
+        indices = np.arange(n_cols)
+        rng.shuffle(indices)
+
+    print(f"Iniciando procesamiento de {partes-1} partes...")
+    
+    for i in range(1, partes):
+        gc.collect() 
+        
+        try:
+            # --- 1. Selección de Columnas ---
+            if solapar:
+                chunk_size = int(n_cols / (partes - 1))
+                if chunk_size == 0: continue
+                selected_indices = rng.choice(n_cols, size=chunk_size, replace=False)
+            else:
+                frac = i / (partes - 1)
+                sub_frac = (i - 1) / (partes - 1)
+                start = int(n_cols * sub_frac)
+                end = int(n_cols * frac)
+                if start >= end: continue
+                selected_indices = indices[start:end]
+
+            selected_indices_sorted = np.sort(selected_indices)
+            column_sets.append(selected_indices_sorted)
+
+            # Slicing de la matriz gigante
+            XX = X_train[:, selected_indices_sorted]
+
+            # --- 2. Resolver con MOSEK (Tu función) ---
+            # Retorna w denso (tamaño pequeño), b, xi
+            w_sub, b, xi = solve_svm_conic(XX, y_train, C=1.0, time_limit_sec=time_max)
+            
+            # --- 3. CAMBIO CRÍTICO: Construcción Sparse Directa ---
+            # w_sub es denso pero "pequeño" (ej. 100k). 
+            # NO HACER: w_full = np.zeros(13_000_000) <- ESTO MATABA TU RAM
+            
+            # Asegurar flat array
+            w_sub_flat = np.asarray(w_sub).flatten().astype(np.float32)
+            
+            # Construimos directamente la matriz dispersa mapeada al espacio original
+            # data: los valores calculados
+            # indices: las posiciones reales en el espacio de 13M
+            # indptr: estructura para 1 sola columna
+            
+            w_full_sparse = sp.csc_matrix(
+                (w_sub_flat, selected_indices_sorted, np.array([0, len(w_sub_flat)])),
+                shape=(n_cols, 1), # Tamaño total (13M, 1)
+                dtype=np.float32
+            )
+            
+            # Guardar tupla (Ahora w_full_sparse ocupa casi nada de RAM)
+            K.append((w_full_sparse, float(b), xi))
+            
+            log_info.append({
+                'part': i, 'status': 'success', 
+                'n_features': len(selected_indices_sorted), 'bias': float(b)
+            })
+            
+        except Exception as e:
+            print(f"[i={i}] Error en parte random: {e}")
+            log_info.append({'part': i, 'status': 'error', 'error_msg': str(e)})
+
+    df_log = pd.DataFrame(log_info)
+    
+    print(f"Compactando {len(K)} columnas de subproblemas...")
+    K_sparse_list = compactar_K_a_sparse(K, keep_xi=keep_xi)
+    print("Compactación finalizada.")
+    
+    return K_sparse_list, column_sets, df_log
 
 # --- HELPERS PARA CANÓNICOS (SPARSE) ---
 
