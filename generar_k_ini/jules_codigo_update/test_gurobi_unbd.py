@@ -67,12 +67,15 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
     env.setParam("OutputFlag", 1 if verbose_flag else 0) # el wea
     model = gp.Model("Subproblema_Tesis_Nativo", env=env)
 
+    model.setParam("InfUnbdInfo", 1)
+    model.setParam("Presolve", 0)
     if isinstance(gurobi_config, dict):
         for param_name, param_val in gurobi_config.items():
-            model.setParam(param_name, param_val)
-    else:
-        model.setParam("InfUnbdInfo", 1)
-        model.setParam("Presolve", 0)
+            if not str(param_name).startswith("MSK_"):
+                try:
+                    model.setParam(param_name, param_val)
+                except Exception:
+                    pass
 
     # --- 3. CREACIÓN DE VARIABLES CON NOMBRE ---
     # --- 3. REGLA DE ORO: USAR addMVar() EN LUGAR DE addVars() ---
