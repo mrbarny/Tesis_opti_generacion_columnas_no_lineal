@@ -97,8 +97,19 @@ def cargar_datos_benchmark(bench_dir):
     else:
         raise KeyError("El archivo joblib no contiene 'X_both' ni 'X_train'.")
 
-    # Asegurar que las etiquetas y estén en {-1, 1}
-    y = np.where(y <= 0, -1, 1)
+    # Liberar diccionario intermedio inmediatamente
+    del data_dict
+    gc.collect()
+
+    # Convertir X estrictamente a matriz dispersa para prevenir MemoryError en matrices 10000x100000
+    if not sp.issparse(X):
+        print("  -> Convirtiendo X a scipy.sparse.csr_matrix para optimizar consumo de RAM...")
+        X = sp.csr_matrix(X)
+    elif not isinstance(X, sp.csr_matrix):
+        X = X.tocsr()
+
+    # Asegurar que las etiquetas y estén en {-1, 1} de tipo compacto int8
+    y = np.where(y <= 0, -1, 1).astype(np.int8)
 
     # Buscar archivos de K canónicos y K forest
     k_canonicos_files = sorted(bench_dir.glob("K_canonico_*.pkl"))
