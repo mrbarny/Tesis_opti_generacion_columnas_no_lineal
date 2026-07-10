@@ -149,9 +149,9 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
     M_box = n_features
     print(f"  [Parámetros Base] tol = {tol:.2e}, M_box = {M_box}, max_iter = {max_iter}")
 
-    # 3. Calcular Óptimo Cónico Global de Referencia (1 sola vez por dataset)
+    # 3. Calcular Óptimo Cónico Global de Referencia (1 sola vez por dataset si n_features < 100000)
     conic_opt = None
-    if calc_conic_opt and n_features <= 100000:
+    if calc_conic_opt and n_features < 100000:
         print("  -> Calculando Óptimo Cónico de Referencia (Mosek)...")
         t0_conic = time.time()
         try:
@@ -323,8 +323,11 @@ def main():
     if not base_output_dir.exists():
         raise FileNotFoundError(f"No se encontró el directorio de resultados: {base_output_dir}")
 
-    # Detectar subdirectorios de experimentos
-    subdirs = [d for d in sorted(base_output_dir.iterdir()) if d.is_dir() and (d / "dataset_escalado.joblib").exists()]
+    # Detectar subdirectorios de experimentos y dejar instancias 10000x100000 para el final
+    subdirs_all = [d for d in base_output_dir.iterdir() if d.is_dir() and (d / "dataset_escalado.joblib").exists()]
+    subdirs_normal = sorted([d for d in subdirs_all if "10000x100000" not in d.name], key=lambda x: x.name)
+    subdirs_huge = sorted([d for d in subdirs_all if "10000x100000" in d.name], key=lambda x: x.name)
+    subdirs = subdirs_normal + subdirs_huge
 
     if args.benchmarks:
         subdirs = [d for d in subdirs if d.name in args.benchmarks]
@@ -334,11 +337,18 @@ def main():
     print(f"Directorio Raíz: {base_output_dir}")
     print("=" * 70)
 
+    reporte_path = base_output_dir / "reporte.txt"
+    with open(reporte_path, "a", encoding="utf-8") as f_rep:
+        f_rep.write(f"\n--- INICIO LOTE EXPERIMENTOS ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---\n")
+
     resumen_list = []
     t_inicio_batch = time.time()
 
     for idx, bench_dir in enumerate(subdirs, 1):
         print(f"\n[{idx}/{len(subdirs)}] Procesando {bench_dir.name}...")
+        with open(reporte_path, "a", encoding="utf-8") as f_rep:
+            f_rep.write(f"[{idx}/{len(subdirs)}] Iniciando carpeta {bench_dir.name}\n")
+
         try:
             rows_resumen = procesar_experimento(
                 bench_dir,
@@ -346,10 +356,34 @@ def main():
                 calc_conic_opt=not args.no_conic_opt
             )
             resumen_list.extend(rows_resumen)
+            with open(reporte_path, "a", encoding="utf-8") as f_rep:
+                f_rep.write(f"  [OK] Carpeta {bench_dir.name} procesada exitosamente.\n")
+        except MemoryError as me:
+            print(f"  [WARN] MemoryError detectado en {bench_dir.name}. Limpiando RAM y reintentando una vez...")
+            with open(reporte_path, "a", encoding="utf-8") as f_rep:
+                f_rep.write(f"  [WARN] MemoryError en {bench_dir.name}. Reintentando tras gc.collect()...\n")
+            gc.collect()
+            try:
+                rows_resumen = procesar_experimento(
+                    bench_dir,
+                    max_iter=args.max_iter,
+                    calc_conic_opt=not args.no_conic_opt
+                )
+                resumen_list.extend(rows_resumen)
+                with open(reporte_path, "a", encoding="utf-8") as f_rep:
+                    f_rep.write(f"  [OK] Carpeta {bench_dir.name} procesada exitosamente tras reintento.\n")
+            except Exception as e2:
+                print(f"  [SALTADO] Carpeta {bench_dir.name} omitida tras segundo error de memoria: {e2}")
+                with open(reporte_path, "a", encoding="utf-8") as f_rep:
+                    f_rep.write(f"  [SALTADO] Carpeta {bench_dir.name} omitida: {e2}\n")
+                gc.collect()
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"  [ERROR] Error en experimento {bench_dir.name}: {e}")
+            with open(reporte_path, "a", encoding="utf-8") as f_rep:
+                f_rep.write(f"  [ERROR] {bench_dir.name}: {e}\n")
+            gc.collect()
 
         # Guardado incremental de la tabla resumen
         if resumen_list:
