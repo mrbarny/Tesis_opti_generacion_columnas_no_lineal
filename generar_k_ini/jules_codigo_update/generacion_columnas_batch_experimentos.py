@@ -258,7 +258,8 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
                 plt.close('all')
 
             ub_history = np.array(gen_col.opt_val_fin, dtype=float)
-            lb_history = sanear_historial_lb(gen_col.historial_cotas_inferiores)
+            lb_raw = getattr(gen_col, "lb_fin", getattr(gen_col, "historial_cotas_inferiores", []))
+            lb_history = sanear_historial_lb(lb_raw)
 
             detalle_dict = {
                 "benchmark": bench_name,
