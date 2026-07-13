@@ -2008,7 +2008,9 @@ class GeneracionColumnasDW:
         # Obtener dimensiones locales frescas
         n_samples_local, n_features_local = self.X.shape
         
-        # Acceso eficiente a datos sparse
+        # Acceso eficiente a datos sparse asegurando formato disperso
+        if not sp.issparse(w_sparse):
+            w_sparse = sp.csc_matrix(w_sparse)
         indices = w_sparse.indices
         data = w_sparse.data
         

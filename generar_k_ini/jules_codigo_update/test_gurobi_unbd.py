@@ -151,8 +151,10 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
     # -----------------------------------------------------------------
     elif model.Status == GRB.OPTIMAL:
         print("[Pricing] Solución acotada encontrada (PUNTO).")
-        # Retornamos en el formato estándar (w_val, b_val, xi_val, obj_val)
-        return (w_vars.X, b_var.X[0], xi_vars.X, model.ObjVal)
+        w_val_flat = np.asarray(w_vars.X).flatten().astype(np.float32)
+        w_sparse = sp.csc_matrix(w_val_flat.reshape(-1, 1), dtype=np.float32)
+        xi_sparse = sp.csc_matrix(np.asarray(xi_vars.X).flatten().reshape(-1, 1), dtype=np.float32)
+        return (w_sparse, float(b_var.X[0]), xi_sparse, model.ObjVal)
     else:
         print(f"[Pricing] Gurobi finalizó con un estatus inesperado: {model.Status}")
         return None
