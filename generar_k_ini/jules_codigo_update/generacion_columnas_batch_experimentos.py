@@ -221,38 +221,44 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
             print(f"  -> Estado final: {gen_col.status} | Iteraciones: {gen_col.i} | Tiempo: {t_total_min:.2f} min")
 
             # Guardar visualizaciones e historial en subexp_dir
+            history_dict = {
+                'iter': list(range(len(ub_history))),
+                'master_value': ub_history,
+                'pricing_value': lb_history
+            }
+
             try:
-                plot_convergence_paper(gen_col, save_path=subexp_dir / "cg_convergencia_paper.png", conic_opt=conic_opt)
+                plot_convergence_paper(history_dict, filename=subexp_dir / "cg_convergencia_paper.png", conic_opt=conic_opt)
             except Exception as e:
                 print(f"  [WARN plot_convergence_paper]: {e}")
                 plt.close('all')
 
             try:
-                plot_convergence_metrics(gen_col, save_path=subexp_dir / "cg_convergencia_metricas.png", conic_opt=conic_opt)
+                plot_convergence_metrics(history_dict, conic_opt=conic_opt, dataset_size=f"{n_samples}x{n_features}", filename=subexp_dir / "cg_convergencia_metricas.png")
             except Exception as e:
                 print(f"  [WARN plot_convergence_metrics]: {e}")
                 plt.close('all')
 
             try:
-                plot_convergence_split(gen_col, save_path=subexp_dir / "cg_convergencia_split.png", conic_opt=conic_opt)
+                plot_convergence_split(history_dict, filename=subexp_dir / "cg_convergencia_split.png", conic_opt=conic_opt)
             except Exception as e:
                 print(f"  [WARN plot_convergence_split]: {e}")
                 plt.close('all')
 
             try:
-                plot_computation_times(gen_col, save_path=subexp_dir / "cg_tiempos_computo.png")
+                plot_computation_times(gen_col.time_master, gen_col.time_pricing, filename=subexp_dir / "cg_tiempos_computo.png")
             except Exception as e:
                 print(f"  [WARN plot_computation_times]: {e}")
                 plt.close('all')
 
             try:
-                plot_heatmap_memoria_robusto(gen_col, save_path=subexp_dir / "cg_heatmap_puntos.png", tipo="puntos")
+                plot_heatmap_memoria_robusto(gen_col.memoria_theta, filename=subexp_dir / "cg_heatmap_puntos.png", tipo="Puntos")
             except Exception as e:
                 print(f"  [WARN plot_heatmap_puntos]: {e}")
                 plt.close('all')
 
             try:
-                plot_heatmap_memoria_robusto(gen_col, save_path=subexp_dir / "cg_heatmap_rayos.png", tipo="rayos")
+                plot_heatmap_memoria_robusto(gen_col.memoria_mu, filename=subexp_dir / "cg_heatmap_rayos.png", tipo="Rayos")
             except Exception as e:
                 print(f"  [WARN plot_heatmap_rayos]: {e}")
                 plt.close('all')
