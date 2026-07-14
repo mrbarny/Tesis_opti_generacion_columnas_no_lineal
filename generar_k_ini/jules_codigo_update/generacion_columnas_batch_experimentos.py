@@ -128,14 +128,15 @@ def cargar_datos_benchmark(bench_dir):
     return X, y, K_ini_points, K_ini_rays
 
 
-def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
+def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True, pricing_mode="gurobi_acc"):
     """
-    Ejecuta el pipeline completo de Generación de Columnas para las 9 combinaciones
-    experimentales (3 inputs x 3 pricings) sobre un dataset individual de benchmark.
+    Ejecuta el pipeline completo de Generación de Columnas para las combinaciones
+    experimentales sobre un dataset individual de benchmark.
+    Por defecto ejecuta los 3 K inputs con Gurobi Acelerado (gurobi_acc, ~90 min total por carpeta).
     """
     bench_name = bench_dir.name
     print("\n" + "=" * 70)
-    print(f">>> INICIANDO BENCHMARK (9 EXPERIMENTOS): {bench_name}")
+    print(f">>> INICIANDO BENCHMARK: {bench_name} (pricing_mode={pricing_mode})")
     print("=" * 70)
 
     # 1. Cargar datos base
@@ -168,12 +169,21 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
         ("ambos", K_ini_points_forest, K_ini_rays_canonicos)
     ]
 
-    # 5. Definir las 3 configuraciones de pricing
-    pricing_configs = [
+    # 5. Definir configuraciones de pricing disponibles
+    all_pricing = [
         ("gurobi_std", pricing_gurobi, False),
         ("gurobi_acc", pricing_gurobi, True),
         ("mosek_caja", solve_pricing_problem_caja, True)
     ]
+    if pricing_mode == "all":
+        pricing_configs = all_pricing
+    else:
+        pricing_configs = [p for p in all_pricing if p[0] == pricing_mode]
+        if not pricing_configs:
+            pricing_configs = [("gurobi_acc", pricing_gurobi, True)]
+
+    total_subexps = len(input_configs) * len(pricing_configs)
+    print(f"  -> Total de sub-experimentos programados para esta carpeta: {total_subexps}")
 
     rows_experimento = []
     exp_counter = 1
@@ -186,7 +196,7 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
             subexp_dir.mkdir(parents=True, exist_ok=True)
 
             print("\n  " + "-" * 60)
-            print(f"  [{exp_counter}/9] Ejecutando: {subexp_name}")
+            print(f"  [{exp_counter}/{total_subexps}] Ejecutando: {subexp_name}")
             print("  " + "-" * 60)
 
             gen_col = GeneracionColumnasDW(
@@ -322,6 +332,7 @@ def main():
     parser.add_argument("--base-dir", type=str, default="Experimentos_K_ini_Resultados", help="Carpeta base de los experimentos (defecto: Experimentos_K_ini_Resultados)")
     parser.add_argument("--benchmarks", nargs="*", default=None, help="Lista opcional de nombres de carpetas de benchmark a procesar (defecto: procesa todos)")
     parser.add_argument("--no-conic-opt", action="store_true", help="Desactivar el cálculo del óptimo cónico completo de referencia")
+    parser.add_argument("--pricing-mode", type=str, default="gurobi_acc", choices=["gurobi_acc", "gurobi_std", "mosek_caja", "all"], help="Modo de pricing a ejecutar (defecto: gurobi_acc para 3 experimentos por carpeta)")
     args = parser.parse_args()
 
     absolute_path = Path(__file__).resolve()
@@ -340,9 +351,10 @@ def main():
     if args.benchmarks:
         subdirs = [d for d in subdirs if d.name in args.benchmarks]
 
+    num_exps_por_carpeta = 9 if args.pricing_mode == "all" else 3
     print("=" * 70)
-    print(f"PIPELINE BATCH GENERACIÓN DE COLUMNAS: {len(subdirs)} CARPETAS DETECTADAS (9 EXPERIMENTOS C/U)")
-    print(f"Directorio Raíz: {base_output_dir}")
+    print(f"PIPELINE BATCH GENERACIÓN DE COLUMNAS: {len(subdirs)} CARPETAS DETECTADAS ({num_exps_por_carpeta} EXPERIMENTOS C/U)")
+    print(f"Directorio Raíz: {base_output_dir} | Modo Pricing: {args.pricing_mode}")
     print("=" * 70)
 
     reporte_path = base_output_dir / "reporte.txt"
@@ -361,7 +373,8 @@ def main():
             rows_resumen = procesar_experimento(
                 bench_dir,
                 max_iter=args.max_iter,
-                calc_conic_opt=not args.no_conic_opt
+                calc_conic_opt=not args.no_conic_opt,
+                pricing_mode=args.pricing_mode
             )
             resumen_list.extend(rows_resumen)
             with open(reporte_path, "a", encoding="utf-8") as f_rep:
@@ -375,7 +388,8 @@ def main():
                 rows_resumen = procesar_experimento(
                     bench_dir,
                     max_iter=args.max_iter,
-                    calc_conic_opt=not args.no_conic_opt
+                    calc_conic_opt=not args.no_conic_opt,
+                    pricing_mode=args.pricing_mode
                 )
                 resumen_list.extend(rows_resumen)
                 with open(reporte_path, "a", encoding="utf-8") as f_rep:
