@@ -201,7 +201,7 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
                 M=M_box,
                 K_ini_points=K_pts,
                 K_ini_rays=K_rys,
-                tipo="convexo",
+                tipo="afin",
                 pricing=pricing_engine,
                 gradient_strategy="full_gradient",
                 pricing_acceleration=pricing_acc,
@@ -212,7 +212,7 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
             res_run = gen_col.run(
                 max_iter=max_iter,
                 n_periodos=20,
-                frecuencia_check=40,
+                frecuencia_check=20,
                 max_rayos=500
             )
             t_total_seg = time.time() - t0_run
@@ -312,14 +312,15 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Ejecutor Batch de Experimentos de Generación de Columnas (CG / DW)")
-    parser.add_argument("--max-iter", type=int, default=200, help="Límite máximo de iteraciones por experimento (defecto: 200)")
+    parser.add_argument("--max-iter", type=int, default=50, help="Límite máximo de iteraciones por experimento (defecto: 50)")
+    parser.add_argument("--base-dir", type=str, default="Experimentos_K_ini_Resultados", help="Carpeta base de los experimentos (defecto: Experimentos_K_ini_Resultados)")
     parser.add_argument("--benchmarks", nargs="*", default=None, help="Lista opcional de nombres de carpetas de benchmark a procesar (defecto: procesa todos)")
     parser.add_argument("--no-conic-opt", action="store_true", help="Desactivar el cálculo del óptimo cónico completo de referencia")
     args = parser.parse_args()
 
     absolute_path = Path(__file__).resolve()
     dir_path = absolute_path.parent
-    base_output_dir = dir_path / "Experimentos_K_ini_Resultados"
+    base_output_dir = dir_path / args.base_dir
 
     if not base_output_dir.exists():
         raise FileNotFoundError(f"No se encontró el directorio de resultados: {base_output_dir}")
