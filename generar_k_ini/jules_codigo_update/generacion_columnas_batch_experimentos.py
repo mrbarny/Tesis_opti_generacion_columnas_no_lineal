@@ -230,6 +230,11 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True, pricing_m
 
             print(f"  -> Estado final: {gen_col.status} | Iteraciones: {gen_col.i} | Tiempo: {t_total_min:.2f} min")
 
+            # Obtener historiales primal y dual saneados
+            ub_history = np.array(gen_col.opt_val_fin, dtype=float)
+            lb_raw = getattr(gen_col, "lb_fin", getattr(gen_col, "historial_cotas_inferiores", []))
+            lb_history = sanear_historial_lb(lb_raw)
+
             # Guardar visualizaciones e historial en subexp_dir
             history_dict = {
                 'iter': list(range(len(ub_history))),
@@ -272,10 +277,6 @@ def procesar_experimento(bench_dir, max_iter=200, calc_conic_opt=True, pricing_m
             except Exception as e:
                 print(f"  [WARN plot_heatmap_rayos]: {e}")
                 plt.close('all')
-
-            ub_history = np.array(gen_col.opt_val_fin, dtype=float)
-            lb_raw = getattr(gen_col, "lb_fin", getattr(gen_col, "historial_cotas_inferiores", []))
-            lb_history = sanear_historial_lb(lb_raw)
 
             detalle_dict = {
                 "benchmark": bench_name,
