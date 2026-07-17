@@ -133,7 +133,7 @@ for bench_name, bench_params in benchmarks.items():
 #    X_tfidf = tfidf_vect.transform(X) #transforma textos!!
     scaler = MaxAbsScaler() 
 #    X_ms=scaler.fit_transform(X)
-    X = scaler.fit_transform(X)
+    X = scaler.fit_transform(X) #revisar porque no es SPARSE. 
     # Guardar dataset procesado
     data_dict = {
         "X_both": X, 
@@ -149,7 +149,8 @@ for bench_name, bench_params in benchmarks.items():
     K_ini_canonico_rand = generar_K_canonico_sparse(
         n_features=n_features, 
         n_samples=n_samples, 
-        tamaño=tamaño # Ajustable según lo necesites #10% canonicos random. 
+        tamaño=tamaño, # Ajustable según lo necesites #10% canonicos random. 
+        ambos_signos=True # Genera pares diametralmente opuestos (+e_i y -e_i)
     )
     joblib.dump(K_ini_canonico_rand, bench_dir / f'K_canonico_aleatorio_{tamaño*100}%.pkl')
     

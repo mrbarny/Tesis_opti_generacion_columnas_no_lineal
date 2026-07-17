@@ -158,27 +158,31 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
     else:
         print(f"[Pricing] Gurobi finalizó con un estatus inesperado: {model.Status}")
         return None
-def generar_canonico_sparse(n_features, coordenada, n_samples, dtype=np.float32):
+def generar_canonico_sparse(n_features, coordenada, n_samples, dtype=np.float32, signo=+1.0):
     xi_placeholder = sp.csc_matrix((n_samples, 1), dtype=dtype) if n_samples is not None else None
     if coordenada == -1:
         w_sparse = sp.csc_matrix((n_features, 1), dtype=dtype)
         return (w_sparse, 0.0, xi_placeholder)
     else:
+        val = float(np.sign(signo))
+        if val == 0.0: val = 1.0
         w_sparse = sp.csc_matrix(
-            (np.array([1.0], dtype=dtype), (np.array([int(coordenada)]), np.array([0]))),
+            (np.array([val], dtype=dtype), (np.array([int(coordenada)]), np.array([0]))),
             shape=(n_features, 1), dtype=dtype)
         return (w_sparse, 0.0, xi_placeholder)
 
-def generar_K_canonico_sparse(n_features, n_samples, tamaño=0.1):
+def generar_K_canonico_sparse(n_features, n_samples, tamaño=0.1, ambos_signos=True):
     np.random.seed(420)
-    K_generado = [generar_canonico_sparse(n_features, coordenada=-1, n_samples=n_samples)] 
+    K_generado = [generar_canonico_sparse(n_features, coordenada=-1, n_samples=n_samples, signo=+1.0)] 
     num_canonicos = int(n_features * tamaño)
     if num_canonicos >= n_features: columnas = np.arange(n_features)
     else: columnas = np.random.choice(n_features, num_canonicos, replace=False)
-    print(f"Generando {len(columnas)} vectores canónicos sparse...")
+    print(f"Generando {len(columnas)} vectores canónicos sparse (ambos_signos={ambos_signos})...")
     for i in columnas:
-        K_generado.append(generar_canonico_sparse(n_features, coordenada=i, n_samples=n_samples))
-    print("Set K canónico sparse generado.")
+        K_generado.append(generar_canonico_sparse(n_features, coordenada=i, n_samples=n_samples, signo=+1.0))
+        if ambos_signos:
+            K_generado.append(generar_canonico_sparse(n_features, coordenada=i, n_samples=n_samples, signo=-1.0))
+    print(f"Set K canónico sparse generado con {len(K_generado)} vectores en total.")
     return K_generado
 
 def _precompute_sparse_matrix(K_list, n_features):

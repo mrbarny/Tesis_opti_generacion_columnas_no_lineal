@@ -139,23 +139,22 @@ def pares_en_K_sparse(K):
             ya.add((j, sg))
     return ya
 
-def generar_canonico_sparse(n_features, coordenada, n_samples, dtype=np.float32):
+def generar_canonico_sparse(n_features, coordenada, n_samples, dtype=np.float32, signo=+1.0):
     xi_placeholder = sp.csc_matrix((n_samples, 1), dtype=dtype) if n_samples is not None else None
     if coordenada == -1:
         w_sparse = sp.csc_matrix((n_features, 1), dtype=dtype)
         return (w_sparse, 0.0, xi_placeholder)
     else:
+        val = float(np.sign(signo))
+        if val == 0.0: val = 1.0
         w_sparse = sp.csc_matrix(
-            (np.array([1.0], dtype=dtype), (np.array([int(coordenada)]), np.array([0]))),
+            (np.array([val], dtype=dtype), (np.array([int(coordenada)]), np.array([0]))),
             shape=(n_features, 1), dtype=dtype)
         return (w_sparse, 0.0, xi_placeholder)
     
 def generar_canonico_con_signo_sparse(n_features, n_samples, j, signo=+1.0):
-    (w_sparse, b_tag, xi_sparse) = generar_canonico_sparse(
-        n_features=n_features, coordenada=int(j), n_samples=n_samples, dtype=np.float32)
-    if w_sparse.nnz > 0:
-        w_sparse.data[0] = float(np.sign(signo))
-    return (w_sparse, b_tag, xi_sparse)
+    return generar_canonico_sparse(
+        n_features=n_features, coordenada=int(j), n_samples=n_samples, dtype=np.float32, signo=signo)
 
 
 def _pack_solution(w_val, b_val, xi_val, obj_val):

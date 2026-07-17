@@ -84,16 +84,19 @@ def solve_svm_conic(X, y, C=1.0, time_limit_sec=3600*60, solo_w_b_xi=True):
     ]
     objective = cp.Minimize(tau + C * cp.sum(xi))
     prob = cp.Problem(objective, constraints)
-    prob.solve(solver=cp.MOSEK, warm_start=True) #le quitaron el max time para que sea acertado. 
+    prob.solve(solver=cp.MOSEK, mosek_params={
+               "MSK_DPAR_OPTIMIZER_MAX_TIME": float(time_limit_sec)}, warm_start=True)
+    # ... (prints omitidos por brevedad) ...
+    #print(prob.value)
     if solo_w_b_xi == True:
         return (w.value, b.value, xi.value)
     else:
         return [(w.value, b.value, xi.value),prob.value]
 
 #el resultado del OG. 
-skl_svm_res = [(None,None,None), 0]
+skl_svm_res= skl_svm(X_train, y_train, X_test)
 #el resultado del conico
-con_svm_res = [(None,None,None), 0]
+con_svm_res= solve_svm_conic(X_train, y_train,solo_w_b_xi=False)
 opt_teorico_con=con_svm_res[1] 
 
 # In[2]: Funciones auxiliares 
@@ -283,7 +286,7 @@ def solve_master_primal_v3(X, y, K, tipo,
         
     prob = cp.Problem(objective, list(constraints_dict.values()))
     try:
-        prob.solve(solver=cp.MOSEK, warm_start=warm_start, verbose=verbose) #el warm start a veces cagonea cuando la solucion numericamente cambia poco en el lategame. ayuda harto en el early eso si.  
+        prob.solve(solver=cp.MOSEK, mosek_params=mosek_params, warm_start=warm_start, verbose=verbose) #el warm start a veces cagonea cuando la solucion numericamente cambia poco en el lategame. ayuda harto en el early eso si.  
     except cp.error.SolverError:
         print("⚠️ Master CRASH con params estrictos/warm_start. Reintentando relajado...")
         try:
@@ -293,7 +296,8 @@ def solve_master_primal_v3(X, y, K, tipo,
             params_relaxed["MSK_DPAR_INTPNT_TOL_PFEAS"] = 1e-5
             params_relaxed["MSK_DPAR_INTPNT_TOL_DFEAS"] = 1e-5
             
-            prob.solve(solver=cp.MOSEK, warm_start=False, verbose=True)
+            prob.solve(solver=cp.MOSEK, mosek_params=params_relaxed, 
+                       warm_start=False, verbose=True)
             print("✅ Master recuperado.")
         except Exception as e:
             print(f"🔥 Master falló definitivamente: {e}")
@@ -494,7 +498,7 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
 
     # addMVar nos devuelve vectores matemáticos compatibles con el operador @
     w_vars = model.addMVar(shape=n_features, lb=-GRB.INFINITY, name="pesos_w")
-    b_var = model.addMVar(shape=1, lb=-GRB.INFINITY, name="sesgo_b") # jules lo cambio. Se mantiene consistencia del codigo asi. 
+    b_var = model.addVar(lb=-GRB.INFINITY, name="sesgo_b")
     xi_vars = model.addMVar(shape=n_samples, lb=0.0, name="holguras_xi")
 
 
@@ -505,13 +509,8 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
     
     # --- 5. RESTRICCIONES NATIVAS ---
     # Agregamos las 100,000 restricciones de margen funcional
-    # Para agilizar el proceso en matrices grandes, calculamos el producto punto de cada fila. Jules cambio de 510 a 515. 
-    y_neg = np.where(y <= 0, -1, 1)
-    y_neg_diag = sp.diags(y_neg, dtype=np.float64)
-    X_y = y_neg_diag @ X
-    y_neg_col = y_neg.reshape(-1, 1).astype(np.float64)
-    
-    model.addConstr(X_y @ w_vars + y_neg_col @ b_var + xi_vars >= 1.0, name="restriccion_margen")
+    # Para agilizar el proceso en matrices grandes, calculamos el producto punto de cada fila
+    model.addConstr(y*(X @ w_vars + b_var) + xi_vars >= 1.0, name="restriccion_margen")
     
     if M_box is not None:
         # Si activas la caja para estabilizar, Gurobi acotará los pesos w
@@ -535,7 +534,7 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
         
         # EXTRACCIÓN INSTANTÁNEA: Sin bucles for de Python, directo desde C++
         delta_w_nativo = w_vars.UnbdRay
-        delta_b_nativo = b_var.UnbdRay[0]
+        delta_b_nativo = b_var.UnbdRay
         
         # Buscamos cada una de las 100,000 variables de pesos por su nombre exacto
         norm = np.linalg.norm(delta_w_nativo)
@@ -560,7 +559,7 @@ def pricing_gurobi(X, y, grad_w_flat, K_rays_dict, C,gurobi_config=None, *args, 
     elif model.Status == GRB.OPTIMAL:
         print("[Pricing] Solución acotada encontrada (PUNTO).")
         # Retornamos en el formato estándar (w_val, b_val, xi_val, obj_val)
-        return (w_vars.X, b_var.X[0], xi_vars.X, model.ObjVal)
+        return (w_vars.X, b_var.X, xi_vars.X, model.ObjVal)
     else:
         print(f"[Pricing] Gurobi finalizó con un estatus inesperado: {model.Status}")
         return None
@@ -1088,7 +1087,7 @@ class GeneracionColumnasDW_2:
             mode_name = "VELOCIDAD (Coarse)"
             VER = False
             WS = True
-            self.n_periodos = getattr(self, 'n_periodos_base', self.n_periodos) #jules hizo un fix a la recursion. 
+            self.n_periodos = self.n_periodos
             self.pricing_gurobi_config["FeasibilityTol"] = 1e-4
             
         # Estado 2: Cambios medios -> Precisión Estándar
@@ -1097,7 +1096,7 @@ class GeneracionColumnasDW_2:
             mode_name = "ESTÁNDAR (Medium)"
             VER = True
             WS = True
-            self.n_periodos = int(getattr(self, 'n_periodos_base', self.n_periodos) * 1.1) #jules hizo un fix a la recursion. 
+            self.n_periodos = self.n_periodos * 1.1
             self.pricing_gurobi_config["FeasibilityTol"] = 1e-6
 
         # Estado 3: Cambios finos -> Precisión Máxima
@@ -1115,7 +1114,7 @@ class GeneracionColumnasDW_2:
             
             VER = True
             WS = False
-            self.n_periodos = int(getattr(self, 'n_periodos_base', self.n_periodos) * 1.5) #jules hizo un fix a la recursion. 
+            self.n_periodos = self.n_periodos * 1.5
             self.pricing_gurobi_config["FeasibilityTol"] = 1e-9
             self.pricing_gurobi_config["NumericFocus"] = 3
             
@@ -1135,7 +1134,6 @@ class GeneracionColumnasDW_2:
         self.i = 0
         self.terminamos = False
         time_ini = time.time()
-        self.n_periodos_base = n_periodos #jules hizo un fix a la recursion. 
         self.n_periodos = n_periodos
         
         while not self.terminamos and self.i < max_iter:
@@ -1218,7 +1216,7 @@ n_samples, n_features = X_train.shape
 
 # 1. Configuración de Hiperparámetros
 C_param = 1
-M_box = 1e3
+M_box = None
 tol = 1e-6
 tol_master = 1e-6
 max_iter_gc = 450        # Máximo de iteraciones del algoritmo GC
@@ -1260,7 +1258,7 @@ gen_col.ingresar_parametros(
     M=M_box,
     K_ini_points=K_ini_loaded,           # Input de PUNTOS (se etiquetarán p_X)
     K_ini_rays=K_ini_canonico_loaded,     # Input de RAYOS (se etiquetarán r_X)
-    tipo="afin",                       # Condición de convexidad para los puntos theta
+    tipo="convexo",                       # Condición de convexidad para los puntos theta
     pricing=pricing_gurobi,               # Tu nuevo motor Core API matricial
     gradient_strategy="full_gradient",    # Estrategia basada en el gradiente funcional completo #"alpha_only"
     pricing_acceleration=True,           # Cambiar a True si deseas disparar Magnitud + Screening juntos

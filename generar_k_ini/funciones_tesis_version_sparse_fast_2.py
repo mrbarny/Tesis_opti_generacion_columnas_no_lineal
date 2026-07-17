@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-# RECENT CHANGES (2026-07-09):
-# - Configurado MKL_THREADING_LAYER=SEQUENTIAL para resolver crash Windows 0xc06d007f.
-# - Formulación lineal explícita YX @ w en MOSEK para robustez numérica en batch.
+"""
+Created on Fri Nov 14 13:14:55 2025
+
+@author: matta
+"""
+
+# -*- coding: utf-8 -*-
 """
 VERSIÓN FINAL CONSOLIDADA (v13+)
 - Manejo de SPARSAS (K_ini, K_gen, Master)
@@ -11,12 +15,6 @@ VERSIÓN FINAL CONSOLIDADA (v13+)
 - Paso de Parámetros MOSEK
 - Estrategia de Gradiente
 """
-import os
-os.environ["MKL_THREADING_LAYER"] = "SEQUENTIAL"
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
 import gc
 import cvxpy as cp
 import numpy as np
@@ -42,7 +40,7 @@ def skl_svm(X, y, X_test, C=1.0, loss="hinge", max_iter=100000, solo_w_b_xi=Fals
     b = est.intercept_[0]
     margins = y * (X @ w + b)
     xi = np.maximum(0, 1 - margins)
-    obj_val = float(np.sqrt(np.sum(np.square(w)))) + C * np.sum(xi)
+    obj_val = np.linalg.norm(w) + C * np.sum(xi)
     # ... (prints omitidos por brevedad) ...
     if solo_w_b_xi == True:
         return (w, b, xi)
@@ -606,8 +604,7 @@ def generar_set_columnas_costos_reducidos_sparse(
     X, y, alpha, K, n_features, n_samples, eps=1e-8, k_max=25, debug=False):
     """ Versión sparse del fallback. Usa helpers esparsos. """
     a = np.asarray(alpha, float).ravel()
-    y_neg = np.where(y <= 0, -1, 1)
-    yv = np.asarray(y_neg, float).ravel() #converts a multi-dimensional array into a flattened, 1-dimensional array 
+    yv = np.asarray(y, float).ravel()
     already_pairs = pares_en_K_sparse(K) 
     idx, sign, sev, meta = screen_from_dual_inequalities(
         X, a, yv, eps=eps, k_max=k_max, already=already_pairs)
@@ -759,18 +756,17 @@ def solve_master_primal_v3(X, y, K, tipo,
     
     # --- Restricciones ---
     y_neg_col = y_neg.reshape(-1, 1)
-    YX = sp.diags(y_neg) @ X
     if M_box is not None: 
         constraints_dict = {
             "soc_norm": cp.SOC(eta, w_combo),
-            "classification": YX @ w_combo + cp.multiply(y_neg_col, b) + xi >= 1, 
+            "classification": cp.multiply(y_neg_col, X @ w_combo + b) >= 1 - xi, 
             "master_box_pos": w_combo <= M_box, 
             "master_box_neg": w_combo >= -M_box
         }
     else:
         constraints_dict = {
             "soc_norm": cp.SOC(eta, w_combo),
-            "classification": YX @ w_combo + cp.multiply(y_neg_col, b) + xi >= 1
+            "classification": cp.multiply(y_neg_col, X @ w_combo + b) >= 1 - xi
         }
     # Restricciones para Puntos (theta) - NADA CAMBIA AQUÍ
     if theta is not None:
@@ -793,7 +789,7 @@ def solve_master_primal_v3(X, y, K, tipo,
         
     prob = cp.Problem(objective, list(constraints_dict.values()))
     try:
-        prob.solve(solver=cp.MOSEK, mosek_params={"MSK_IPAR_NUM_THREADS": 1}, warm_start=warm_start, verbose=verbose)
+        prob.solve(solver=cp.MOSEK, mosek_params=mosek_params, warm_start=warm_start, verbose=verbose) #el warm start a veces cagonea cuando la solucion numericamente cambia poco en el lategame. ayuda harto en el early eso si.  
     except cp.error.SolverError:
         print("⚠️ Master CRASH con params estrictos/warm_start. Reintentando relajado...")
         try:
@@ -803,28 +799,27 @@ def solve_master_primal_v3(X, y, K, tipo,
             params_relaxed["MSK_DPAR_INTPNT_TOL_PFEAS"] = 1e-5
             params_relaxed["MSK_DPAR_INTPNT_TOL_DFEAS"] = 1e-5
             
-            prob.solve(solver=cp.MOSEK, warm_start=True, verbose=True) #jules le quito los mosek params de esta celda 
+            prob.solve(solver=cp.MOSEK, mosek_params=params_relaxed, 
+                       warm_start=True, verbose=True)
             print("✅ Master recuperado.")
         except Exception as e:
             print(f"🔥 Master falló definitivamente: {e}")
             return (None, None, None, None, None, None, None, None, None)
         
     # --- CÁLCULO DE GAP Y GRADIENTE ---
-    primal_value_UB = prob.value if prob.value is not None else float('inf')
 
     grad_w_correcto = np.zeros(n_features, dtype=np.float32) 
     alpha = None
     
     if prob.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
         try:
-            soc_dual = constraints_dict["soc_norm"].dual_value
-            alpha = soc_dual[1] if soc_dual is not None else None
+            alpha = constraints_dict["soc_norm"].dual_value[1]
             pi_dual = constraints_dict["classification"].dual_value
             if alpha is not None and pi_dual is not None:
                 sum_yxpi = X.T @ (y_neg * pi_dual.flatten())
                 alpha_flat = alpha.flatten()
-                sum_yxpi_flat = np.asarray(sum_yxpi).flatten()
-                grad_w_correcto = np.asarray(alpha_flat + sum_yxpi_flat, dtype=np.float64).ravel()
+                sum_yxpi_flat = sum_yxpi.flatten()
+                grad_w_correcto = alpha_flat + sum_yxpi_flat
                 if tijonov==True: 
                     print(prob.value)
                     primal_value_UB = prob.value-reg_term.value
@@ -835,8 +830,7 @@ def solve_master_primal_v3(X, y, K, tipo,
             print(f"ADVERTENCIA: Error al calcular el gradiente: {e}"); alpha = None
     else: print(f"ADVERTENCIA: Master no resolvió óptimamente (status: {prob.status}).")
 
-    norm_grad = float(np.sqrt(np.sum(np.square(grad_w_correcto))))
-    print(f"Norma del gradiente correcto para w: {norm_grad:.4f}")
+    print(f"Norma del gradiente correcto para w: {np.linalg.norm(grad_w_correcto):.4f}")
 
     # --- MODIFICACIÓN DW: ORDEN DE RETORNO (9 VALORES) ---
     # Se añade mu_val. ¡Esto cambia el orden de los resultados!
@@ -931,17 +925,15 @@ def solve_master_primal_v2(X, y, K, tipo, C=1.0, tol=1e-6, mosek_params={}, M_bo
             if alpha is not None and pi_dual is not None:
                 sum_yxpi = X.T @ (y_neg * pi_dual.flatten())
                 alpha_flat = alpha.flatten()
-                sum_yxpi_flat = np.asarray(sum_yxpi).flatten()
-                grad_w_correcto = np.asarray(alpha_flat + sum_yxpi_flat, dtype=np.float64).ravel()
+                sum_yxpi_flat = sum_yxpi.flatten()
+                grad_w_correcto = alpha_flat + sum_yxpi_flat
             else: print("ADVERTENCIA: No se pudieron obtener las variables duales (valores None).")
         except Exception as e:
             print(f"ADVERTENCIA: Error al calcular el gradiente: {e}"); alpha = None
     else: print(f"ADVERTENCIA: Master no resolvió óptimamente (status: {prob.status}).")
 
-    norm_grad = float(np.sqrt(np.sum(np.square(grad_w_correcto))))
-    print(f"Norma del gradiente correcto para w: {norm_grad:.4f}")
-    norm_w = float(np.sqrt(np.sum(np.square(w_combo.value)))) if w_combo.value is not None else 0.0
-    print("la norma de w obtenido es de ", norm_w)
+    print(f"Norma del gradiente correcto para w: {np.linalg.norm(grad_w_correcto):.4f}")
+    print("la norma de w obtenido es de ", np.linalg.norm(w_combo.value))
 
     # --- ORDEN DE RETORNO (9 VALORES) ---
     theta_val = theta.value.flatten() if theta.value is not None else None
@@ -1025,10 +1017,6 @@ def K_forest_2(X_train, y_train, n_iters, partes=101, time_max=60, tol=1e-06,
         fixed_sample_size (int): Número de filas a utilizar en cada sub-problema. 
                                  Si es None, usa todo el dataset.
     '''
-    ''' La idea detras es que divides el espacio de features en las partes asociadas de tal manera que el problema conico se resuelve en menos de 1 minuto (time_max)
-    Despues de eso viene la parte clave, la idea de crear_sub_problema_random es que elige ciertas features al azar para cada uno de los sub sets hecho por partes, y luego resuelve el K final con el master
-    Ese master simplemente debe devolver las soluciones que son mas grandes que la tolerancia elegida. Si eliges solapar=True, se pueden repetir columnas en los sub sets aleatorios.
-    Si es false, lo divide en partes iguales pero aleatoriza quien va donde. EL RANDOM FOREST CLASICO UTILIZA SOLAPAR = TRUE.'''
     
     n_samples, n_features = X_train.shape 
     
@@ -1234,7 +1222,7 @@ def K_forest_fast_sklearn(X_train, y_train, n_iters=50,
                 ).T 
                 
                 # Esto hace que todas las columnas "pesen" lo mismo numéricamente ####### QUIZAS HAYA QUE CAMBIARLO. 
-                nrm = float(np.sqrt(w_full_sparse.power(2).sum()))
+                nrm = sp.linalg.norm(w_full_sparse)
                 if nrm > 1e-9:
                     w_full_sparse = w_full_sparse / nrm
                 else:
@@ -1315,24 +1303,23 @@ def _solve_pricing_base(X, y, grad_w_vector, C, PRICING_PARAMS, M_box,
     
     n_samples, n_features = X.shape
     y_neg = np.where(y <= 0, -1, 1)
-    grad_w_flat = np.asarray(grad_w_vector, dtype=np.float64).ravel()
+    grad_w_flat = grad_w_vector.flatten()
 
     # --- 1. MODELADO ESTÁNDAR ---
     w = cp.Variable(n_features)
     b = cp.Variable()
     xi = cp.Variable(n_samples, nonneg=True)
     
-    YX = sp.diags(y_neg) @ X
-    constraints = [YX @ w + cp.multiply(y_neg, b) + xi >= 1, xi >= 0]
+    constraints = [cp.multiply(y_neg, X @ w + b) >= 1 - xi, xi >= 0]
     # LA CAJA
     if M_box is not None:
         constraints.extend([w <= M_box, w >= -M_box])
     # la estabilizacion de norma positiva.
-    if add_stabilization_cut: constraints.append(-cp.sum(cp.multiply(grad_w_flat, w)) >= 0)
+    if add_stabilization_cut: constraints.append(-grad_w_flat @ w >= 0)
     # la estabilizacion tipo element wize. 
     if add_component_cut: constraints.append(cp.multiply(w, -grad_w_flat) >= 0)
     
-    objective = cp.Minimize(C * cp.sum(xi) - cp.sum(cp.multiply(grad_w_flat, w)))
+    objective = cp.Minimize(C * cp.sum(xi) - grad_w_flat @ w)
     prob = cp.Problem(objective, constraints)
     
     # --- 2. CONFIGURACIÓN DE PARÁMETROS (Segura) ---
@@ -1340,14 +1327,14 @@ def _solve_pricing_base(X, y, grad_w_vector, C, PRICING_PARAMS, M_box,
     # 1 = ON, 0 = OFF
     safe_params = {
         "MSK_IPAR_INFEAS_REPORT_AUTO": 1, 
-        "MSK_IPAR_PRESOLVE_USE": 0,  # Vital: Presolve OFF ayuda a que el rayo sea canónico
-        "MSK_IPAR_NUM_THREADS": 1
+        "MSK_IPAR_PRESOLVE_USE": 0  # Vital: Presolve OFF ayuda a que el rayo sea canónico
     }
     if PRICING_PARAMS:
         safe_params.update(PRICING_PARAMS)
 
     # --- 3. RESOLUCIÓN ESTÁNDAR ---
     try:
+        # Llamada normal. Si el parche funciona, esto poblará w.value incluso en unbounded.
         prob.solve(
             solver=cp.MOSEK, 
             mosek_params=safe_params, 
@@ -1375,7 +1362,7 @@ def _solve_pricing_base(X, y, grad_w_vector, C, PRICING_PARAMS, M_box,
             print(f"[pricing] ¡ÉXITO! El parche funcionó. w.value tiene datos.")
             
             # Normalización del rayo (Indispensable numéricamente)
-            norm = float(np.sqrt(np.sum(np.square(w.value))))
+            norm = np.linalg.norm(w.value)
             if norm > 1e-9:
                 scale = 1.0 / norm
                 # Retornamos -inf para indicar explícitamente que es un rayo
@@ -1399,6 +1386,7 @@ def _pack_solution(w_val, b_val, xi_val, obj_val):
     
     w_sparse = sp.csc_matrix(w_val.reshape(-1, 1), dtype=np.float32)
     xi_sparse = sp.csc_matrix(xi_val.reshape(-1, 1), dtype=np.float32)
+    
     return (w_sparse, b_val, xi_sparse, obj_val)
 
 
@@ -1450,22 +1438,37 @@ def solve_pricing_problem_caja(X, y, grad_w, K=None, C=1.0, PRICING_PARAMS={}, M
         print("   -> Pasando a protocolo de emergencia.")
 
     # --- INTENTO 3: Fallback Heurístico (Emergencia) ---
-    print(f"🔥 Pricing falló totalmente. Devolviendo control a la iteración para Fallback...") #jules le quito el fallback automatico en esta parte
-    return (None, None, None, 0.0)
+    print(f"🔥 Pricing falló totalmente. Activando Fallback Heurístico...")
+    
+    
+    # iteracion_pricing detecte el fallo y active el Rayo de Gradiente o Canónicos   
+    return generar_set_columnas_costos_reducidos_sparse(
+        X, y, grad_w, K, X.shape[1], X.shape[0], eps=1e-8, k_max=50
+    )
 
 
 def solve_pricing_problem_combinado_sumar_restricto_2(X, y, grad_w, K=None, C=1.0, PRICING_PARAMS={}, M_box=1e4):
     
     
     res = _solve_pricing_base(X, y, grad_w, C, PRICING_PARAMS, M_box, add_stabilization_cut=True)
-    #jules le dejo el  Manejo del fallback delegado a GeneracionColumnasDW
+    # Manejo del fallback
+    if res[0] is None:
+        print(f"Activando fallback heurístico para 'caja_restricto'...")
+        return generar_set_columnas_costos_reducidos_sparse(
+            X, y, grad_w, K, X.shape[1], X.shape[0], eps=1e-8, k_max=50
+        )
     return res
 def solve_pricing_problem_combinado_componente(X, y, grad_w, K=None, C=1.0, PRICING_PARAMS={}, M_box=1e4):
     # Nota: M_box se pasa pero no se usa si add_component_cut es True y no hay BBox
     # La he refactorizado para usar la base, que SÍ usa BBox.
     res= _solve_pricing_base(X, y, grad_w, C, PRICING_PARAMS, M_box, 
                                add_component_cut=True)
-    # Jules Manejo del fallback delegado a GeneracionColumnasDW
+    # Manejo del fallback
+    if res[0] is None and res[3] == np.inf:
+        print(f"Activando fallback heurístico para 'caja_restricto'...")
+        return generar_set_columnas_costos_reducidos_sparse(
+            X, y, grad_w, K, X.shape[1], X.shape[0], eps=1e-8, k_max=25
+        )
     return res    
     
 
@@ -1555,10 +1558,10 @@ class generacion_columnas:
         current_grad = None
         if self.gradient_strategy == "alpha_only":
             current_grad = alpha_puro
-            if alpha_puro is not None: print(f"Estrategia de Pricing: ALPHA_ONLY (Norma: {float(np.sqrt(np.sum(np.square(alpha_puro)))):.4f})")
+            if alpha_puro is not None: print(f"Estrategia de Pricing: ALPHA_ONLY (Norma: {np.linalg.norm(alpha_puro):.4f})")
         else:
             current_grad = grad_w_completo
-            if grad_w_completo is not None: print(f"Estrategia de Pricing: FULL_GRADIENT (Norma: {float(np.sqrt(np.sum(np.square(grad_w_completo)))):.4f})")
+            if grad_w_completo is not None: print(f"Estrategia de Pricing: FULL_GRADIENT (Norma: {np.linalg.norm(grad_w_completo):.4f})")
 
         # Aplicar suavizado (si está habilitado)
         if self.smoothing_factor > 0 and current_grad is not None:
@@ -1567,7 +1570,7 @@ class generacion_columnas:
             else:
                 self.grad_w_actual = ( (1 - self.smoothing_factor) * self.grad_w_actual + 
                                        self.smoothing_factor * current_grad )
-            print(f"Gradiente SUAVIZADO (Norma: {float(np.sqrt(np.sum(np.square(self.grad_w_actual)))):.4f})")
+            print(f"Gradiente SUAVIZADO (Norma: {np.linalg.norm(self.grad_w_actual):.4f})")
         else:
             self.grad_w_actual = current_grad # Sin suavizado
         
@@ -1588,7 +1591,7 @@ class generacion_columnas:
                 print("ERROR: El gradiente es None. Deteniendo la corrida.")
                 self.terminamos = True; self.status = "ERROR_NO_GRADIENT"; return K_dict
     
-            norm_grad = float(np.sqrt(np.sum(np.square(grad_w))))
+            norm_grad = np.linalg.norm(grad_w)
             grad_w_normalizado = grad_w
 
             grad_w_normalizado = grad_w / norm_grad if norm_grad > 1e-8 and self.tipo =="conico" else grad_w #esto entorpece la convergencia. quizas es util si es conico
@@ -1611,7 +1614,7 @@ class generacion_columnas:
                     return K_dict
     
                 # --- TAREA 2: Normalizar la Columna ---
-                norma_w_new = float(np.sqrt(w_new_sparse.power(2).sum()))
+                norma_w_new = sp.linalg.norm(w_new_sparse)
                 w_para_K = w_new_sparse 
                 if norma_w_new > 1e-8 and self.tipo=="conico": #normalizamos solo si es conico. 
                     w_para_K = w_new_sparse / norma_w_new
@@ -1687,9 +1690,9 @@ class generacion_columnas:
                     self.K_fin = K_dict
                     break
             # Criterio de parada: mejora marginal en F.O.
-            if self.i > 1 and abs(self.opt_val_fin[-1] - self.opt_val_fin[-2]) <= self.tol:
+            if self.i > 1 and np.linalg.norm(self.opt_val_fin[-1] - self.opt_val_fin[-2]) <= self.tol:
                 print("****"*10, " fin ", "****"*8)
-                print("la diferencia de las fo fue", abs(self.opt_val_fin[-2]-self.opt_val_fin[-1]))
+                print("la diferencia de las fo fue", np.linalg.norm(self.opt_val_fin[-2]-self.opt_val_fin[-1]))
                 print("Criterio de parada: mejora marginal alcanzada.")
                 self.status="optimo"
                 self.terminamos=True
@@ -1922,8 +1925,8 @@ class GeneracionColumnasDW:
             print(f"🚨 ALERTA: Master Obj subió de {prev_obj:.7f} a {obj_val:.7f} (Diff: {obj_val - prev_obj:.7f})")
             print("   -> Posible inestabilidad numérica o Warm Start fallido.")
             
-        norm_w_combo = float(np.sqrt(np.sum(np.square(w_combo)))) if w_combo is not None else 0.0
-        print("||w|| =", norm_w_combo)
+        print("OBJ =", obj_val)
+        print("||w|| =", np.linalg.norm(w_combo))
         print("sum_xi =", np.sum(xi))
         print("n_points =", len(list_points))
         print("n_rays =", len(list_rays))
@@ -1970,35 +1973,10 @@ class GeneracionColumnasDW:
                     count += 1
                     
             return nuevos_rayos
-    def _generar_rayos_costos_reducidos(self, max_rayos=50):
-        """
-        ESTRATEGIA B: SCREENING DUAL (Violación de Costos Reducidos)
-        """
-        if self.X is None or self.grad_w_actual is None: return []
-
-        K_temp = self.K_rays_dict.copy()
-        
-        _, info = generar_set_columnas_costos_reducidos_sparse(
-            self.X, self.y, self.grad_w_actual, K_temp, 
-            self.X.shape[1], self.X.shape[0], k_max=max_rayos
-        )
-        
-        unique_idx = info.get('idx', [])
-        unique_sign = info.get('sign', [])
-        if len(unique_idx) == 0: return []
-        
-        nuevos_rayos_screening = [
-            generar_canonico_con_signo_sparse(self.X.shape[1], self.X.shape[0], int(j), float(s)) #no veo porqué se re utiliza esto dentro de la clase, pero bueno. 
-            for j, s in zip(unique_idx, unique_sign)
-        ]
-        
-        print(f"  🚀 Screening Dual: {len(nuevos_rayos_screening)} candidatos identificados.")
-        return nuevos_rayos_screening
-
-    def _generar_rayos_aceleracion(self, w_sparse, max_rayos=50): #esta deberia usarse cuando W es obtenido con la CAJA. 
+    def _generar_rayos_aceleracion(self, w_sparse, max_rayos=50):
         """
         ESTRATEGIA DE MAGNITUD RELATIVA:
-        Genera rayos para las coordenadas con mayor valor absoluto en w, 
+        Genera rayos para las coordenadas con mayor valor absoluto en w,
         filtrando ruido y priorizando los 'drivers' principales del vector.
         """
         nuevos_rayos = []
@@ -2010,9 +1988,7 @@ class GeneracionColumnasDW:
         # Obtener dimensiones locales frescas
         n_samples_local, n_features_local = self.X.shape
         
-        # Acceso eficiente a datos sparse asegurando formato disperso
-        if not sp.issparse(w_sparse):
-            w_sparse = sp.csc_matrix(w_sparse)
+        # Acceso eficiente a datos sparse
         indices = w_sparse.indices
         data = w_sparse.data
         
@@ -2022,7 +1998,8 @@ class GeneracionColumnasDW:
         max_abs_val = np.max(np.abs(data))
         
         # Si el vector es puro ruido (muy pequeño), no aceleramos
-        if max_abs_val < 1e-7:  # deberia usarle 1/ size(w) o algo asi para ser consistente. 
+        if max_abs_val < 1e-6: #quizas es muy pequeño
+            print('generar rayos aceleracion encontro un vector muy pequeño')
             return []
 
         # 3. Definir Umbral de Corte
@@ -2062,11 +2039,9 @@ class GeneracionColumnasDW:
     
             # 2. Llamada al Pricing (Pasando K_rays para el fallback)
             
-            norm_grad_actual = float(np.sqrt(np.sum(np.square(self.grad_w_actual))))
-            if norm_grad_actual > 10:
-                grad_w_scaled = self.grad_w_actual / norm_grad_actual
-            else:
-                grad_w_scaled = self.grad_w_actual
+            grad_w_scaled=self.grad_w_actual
+            if np.linalg.norm(self.grad_w_actual)>10:
+                grad_w_scaled=self.grad_w_actual/np.linalg.norm(self.grad_w_actual)
             
             M_box_pricing= self.M_box_pricing
             
@@ -2087,13 +2062,13 @@ class GeneracionColumnasDW:
     
                 # Normalización Vectorial (Si es Cónico)
                 if self.tipo == "conico":
-                    norm_w = float(np.sqrt(w_sp.power(2).sum()))
+                    norm_w = sp.linalg.norm(w_sp)
                     if norm_w > 1e-9: w_sp = w_sp / norm_w
                 
                 # Guardar como PUNTO
                 name = f'p_{self.cnt_points}'
                 self.cnt_points += 1
-                self.memoria_theta[name] = [np.nan] * (self.i + 1)  #JULES CAMBIO A NP.NAN PARA CORREGIR UN BUG DURANTE LIMPIAR COLUMNAS. A veces los 0 confunden al filtro matando antes una columna no testeada. 
+                self.memoria_theta[name] = [0.0] * (self.i + 1) 
                 self.K_points_dict[name] = (w_sp, b_val, xi_sp)
                 print(f"  -> Nuevo PUNTO agregado: {name}")
                 
@@ -2117,19 +2092,23 @@ class GeneracionColumnasDW:
             # ---------------------------------------------------------
             # CASO B: Pricing Falló -> Se activó Fallback (Son RAYOS)
             # ---------------------------------------------------------
-            elif res is None or (isinstance(res, tuple) and res[0] is None) or (isinstance(res, tuple) and len(res) == 2):
-                print("  [Pricing] Fallo primario. Activando Screening de Emergencia...")
-                rayos_screening = self._generar_rayos_costos_reducidos(max_rayos=max_rayos)
+            elif isinstance(res, tuple) and len(res) == 2:
+                K_rays_modified, info = res 
+                agregadas = info.get('agregadas', 0)
                 
                 # Sub-caso B1: El fallback Canónico funcionó
-                if rayos_screening:
-                    for rayo_sparse in rayos_screening: #como ya no es el fallback viejo, ahora se nombran bien. 
-                        r_name = f'r_{self.cnt_rays}'
+                if agregadas > 0:
+                    # Renombrar k_ (del fallback) a r_ (nuestra clase)
+                    keys_to_rename = [k for k in self.K_rays_dict.keys() if k.startswith('k_')]
+                    for old_key in keys_to_rename:
+                        val = self.K_rays_dict[old_key]
+                        del self.K_rays_dict[old_key]
+                        new_name = f'r_{self.cnt_rays}'
                         self.cnt_rays += 1
-                        self.K_rays_dict[r_name] = rayo_sparse
-                        self.memoria_mu[r_name] = [np.nan] * (self.i + 1)
+                        self.K_rays_dict[new_name] = val
+                        self.memoria_mu[new_name] = [0.0] * (self.i + 1)
                     
-                    print(f"  🚀 Fallback Exitoso: {len(rayos_screening)} nuevos RAYOS agregados por Screening Dual.")
+                    print(f"  -> Fallback Canónico: {len(keys_to_rename)} nuevos RAYOS agregados.")
                     self.lb_fin.append(-6742069) # Mantener GAP abierto
     
                 # Sub-caso B2: El fallback Canónico falló (Ya tenemos todos esos ejes)
@@ -2210,7 +2189,7 @@ class GeneracionColumnasDW:
             mode_name = "VELOCIDAD (Coarse)"
             VER=False
             WS=True
-            self.n_periodos= getattr(self, 'n_periodos_base', self.n_periodos) #jules hizo un fix de recursion. 
+            self.n_periodos= self.n_periodos
             print("*"*10,mode_name,"*"*10)
             
             
@@ -2222,7 +2201,7 @@ class GeneracionColumnasDW:
             mode_name = "ESTÁNDAR (Medium)"
             VER= True
             WS= True
-            self.n_periodos= int(getattr(self, 'n_periodos_base', self.n_periodos)*1.1) #jules hizo un fix a la recursion. 
+            self.n_periodos= self.n_periodos*1.1
             print("*"*10,mode_name,"*"*10)
         # Estado 3: Cambios finos -> Precisión Máxima (Usamos la definida en __init__)
         else:
@@ -2240,7 +2219,7 @@ class GeneracionColumnasDW:
             #self.M_box_pricing=1e6
             VER= True
             WS= False
-            self.n_periodos= int(getattr(self, 'n_periodos_base', self.n_periodos)*1.5)
+            self.n_periodos= self.n_periodos*1.5
             print("*"*10,mode_name,"*"*10)
         # --- Actualizar Parámetros ---
         
@@ -2269,7 +2248,6 @@ class GeneracionColumnasDW:
         self.i = 0
         self.terminamos = False
         time_ini = time.time()
-        self.n_periodos_base = n_periodos #jules hizo un fix a la recursion. 
         self.n_periodos=n_periodos
         while not self.terminamos and self.i < max_iter:
             self.actualizar_parametros_solver() #revisa master y pricing 
@@ -2315,7 +2293,7 @@ class GeneracionColumnasDW:
                 # Usamos abs() o max(0, gap)
                 
                 # Nota: Si lb es -inf (fallback), el gap es grande, seguimos.
-                if abs(gap) < self.tol:
+                if gap < self.tol and gap > self.tol:
                     print(f"✅ Convergencia alcanzada por GAP: {gap:.2e}")
                     self.status = "optimo_gap"
                     self.terminamos = True
@@ -2343,7 +2321,4 @@ class GeneracionColumnasDW:
             "opt_vals": self.opt_val_fin,
             "status": self.status
         }    
-
-# CHANGELOG:
-# 2026-07-09: Fijado MKL_THREADING_LAYER=SEQUENTIAL para prevenir error 0xc06d007f en OpenMP/MKL.
-# 2026-07-09: Rediseñadas expresiones lineales de pricing/master a producto matricial explícito YX @ w.
+    
